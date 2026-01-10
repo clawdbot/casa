@@ -1,0 +1,10 @@
+included:
+  - Casa
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - implicitly_unwrapped_optional
+  - sorted_imports
+line_length:
+  warning: 120
+  error: 160

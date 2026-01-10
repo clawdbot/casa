@@ -1,0 +1,9 @@
+.DS_Store
+DerivedData/
+.build/
+CasaCLI/.build/
+Packages/
+*.xcuserstate
+*.xcuserdata/
+*.xccheckout
+*.xcscmblueprint

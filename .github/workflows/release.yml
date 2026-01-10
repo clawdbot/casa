@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g., v1.2.3)"
+        required: true
+
+jobs:
+  build:
+    runs-on: macos-14
+    env:
+      APP_NAME: Casa
+      APP_SCHEME: Casa
+      APP_PROJECT: Casa.xcodeproj
+      DESTINATION: platform=macOS,variant=Mac Catalyst
+      SPARKLE_FEED_URL: https://github.com/${{ github.repository }}/releases/latest/download/appcast.xml
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine release tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ -z "$INPUT_TAG" ]; then
+              echo "Missing tag input for workflow_dispatch" >&2
+              exit 1
+            fi
+            RELEASE_TAG=$INPUT_TAG
+          else
+            RELEASE_TAG=$GITHUB_REF_NAME
+          fi
+
+          if [[ "$RELEASE_TAG" != v* ]]; then
+            echo "Tag should start with v, got $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          VERSION=${RELEASE_TAG#v}
+
+          echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Import signing certificate
+        env:
+          CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "$CERT_BASE64" ]; then
+            echo "Missing APPLE_CERT_BASE64" >&2
+            exit 1
+          fi
+          KEYCHAIN=build.keychain
+          CERT_PATH=$RUNNER_TEMP/signing.p12
+          echo "$CERT_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -s "$KEYCHAIN" login.keychain
+
+      - name: Install provisioning profile
+        env:
+          PROFILE_BASE64: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
+        run: |
+          if [ -z "$PROFILE_BASE64" ]; then
+            echo "Missing APPLE_PROVISION_PROFILE_BASE64" >&2
+            exit 1
+          fi
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+          PROFILE_PATH="$PROFILE_DIR/casa.provisionprofile"
+          echo "$PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+
+      - name: Build
+        env:
+          SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_PUBLIC_KEY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          VERSION: ${{ env.VERSION }}
+        run: |
+          xcodebuild \
+            -project "$APP_PROJECT" \
+            -scheme "$APP_SCHEME" \
+            -configuration Release \
+            -destination "$DESTINATION" \
+            -derivedDataPath DerivedData \
+            SPARKLE_PUBLIC_KEY="$SPARKLE_PUBLIC_KEY" \
+            SPARKLE_FEED_URL="$SPARKLE_FEED_URL" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            build
+
+      - name: Package app
+        run: |
+          APP_PATH="DerivedData/Build/Products/Release-maccatalyst/$APP_NAME.app"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "dist/$APP_NAME.zip"
+
+      - name: Install Sparkle tools
+        run: |
+          brew update
+          brew install sparkle
+
+      - name: Generate appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            echo "Missing SPARKLE_PRIVATE_KEY" >&2
+            exit 1
+          fi
+          KEY_PATH="$RUNNER_TEMP/sparkle_private_key"
+          echo "$SPARKLE_PRIVATE_KEY" > "$KEY_PATH"
+          generate_appcast \
+            --download-url-prefix "https://github.com/${{ github.repository }}/releases/download/${{ env.RELEASE_TAG }}" \
+            --signing-key "$KEY_PATH" \
+            -o dist/appcast.xml \
+            dist
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Casa.zip
+            dist/appcast.xml
+          tag_name: ${{ env.RELEASE_TAG }}

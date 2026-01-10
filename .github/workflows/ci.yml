@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          xcodebuild \
+            -project Casa.xcodeproj \
+            -scheme Casa \
+            -configuration Debug \
+            -destination "platform=macOS,variant=Mac Catalyst" \
+            -derivedDataPath DerivedData \
+            build
+
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: |
+          xcodebuild \
+            -project Casa.xcodeproj \
+            -scheme Casa \
+            -configuration Debug \
+            -destination "platform=macOS,variant=Mac Catalyst" \
+            -derivedDataPath DerivedData \
+            test
